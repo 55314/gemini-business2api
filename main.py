@@ -1371,6 +1371,12 @@ async def admin_disable_account(request: Request, account_id: str):
         multi_account_mgr = _update_account_disabled_status(
             account_id, True, multi_account_mgr
         )
+
+        # 立即保存当前状态到数据库，防止后台任务覆盖
+        if account_id in multi_account_mgr.accounts:
+            account_mgr = multi_account_mgr.accounts[account_id]
+            await account.save_account_cooldown_state(account_mgr, account_id)
+
         return {"status": "success", "message": f"账户 {account_id} 已禁用", "account_count": len(multi_account_mgr.accounts)}
     except Exception as e:
         logger.error(f"[CONFIG] 禁用账户失败: {str(e)}")
@@ -1390,7 +1396,12 @@ async def admin_enable_account(request: Request, account_id: str):
         if account_id in multi_account_mgr.accounts:
             account_mgr = multi_account_mgr.accounts[account_id]
             account_mgr.quota_cooldowns = {}
+            account_mgr.generic_cooldown_until = 0.0
+            account_mgr.permanently_disabled = False
             logger.info(f"[CONFIG] 账户 {account_id} 冷却状态已重置")
+
+            # 立即保存清空的冷却状态到数据库，防止后台任务覆盖
+            await account.save_account_cooldown_state(account_mgr, account_id)
 
         return {"status": "success", "message": f"账户 {account_id} 已启用", "account_count": len(multi_account_mgr.accounts)}
     except Exception as e:
@@ -2029,6 +2040,12 @@ async def chat_impl(
                         await finalize_result(status, 503, f"All accounts unavailable: {str(last_error)[:100]}")
                         raise HTTPException(503, f"All accounts unavailable: {str(last_error)[:100]}")
                     # 继续尝试下一个账户
+
+    # 确保 account_manager 已成功获取
+    if account_manager is None:
+        logger.error(f"[CHAT] [req_{request_id}] 无可用账户")
+        await finalize_result("error", 503, "No available accounts")
+        raise HTTPException(503, "No available accounts")
 
     # 提取用户消息内容用于日志
     if req.messages:
